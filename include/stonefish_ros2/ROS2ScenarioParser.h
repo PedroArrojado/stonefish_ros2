@@ -38,7 +38,7 @@ namespace sf
     public:
         ROS2ScenarioParser(ROS2SimulationManager* sm, const std::shared_ptr<rclcpp::Node>& nh);
 
-   protected:
+//    protected:
         virtual bool PreProcess(XMLNode* root, const std::map<std::string, std::string>& args);
         virtual VelocityField* ParseVelocityField(XMLElement* element);
         virtual bool ParseRobot(XMLElement* element);

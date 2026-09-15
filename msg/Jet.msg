@@ -1,0 +1,3 @@
+geometry_msgs/Vector3 center
+float64 radius
+geometry_msgs/Vector3 velocity

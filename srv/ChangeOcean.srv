@@ -1,0 +1,7 @@
+# float64 height <-- this is basically the sea level, should not change.
+float64 wind_speed
+float64 direction
+float64 age
+---
+bool success   # indicate successful run of triggered service
+string message # informational, e.g. for error messages

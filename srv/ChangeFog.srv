@@ -1,0 +1,5 @@
+float64 density
+geometry_msgs/Vector3 color
+---
+string message
+bool success

@@ -37,36 +37,56 @@ public:
                            const std::string& dataPath, 
                            const sf::RenderSettings& s, 
                            const sf::HelperSettings& h,
-                           sf::Scalar rate) 
-                           : Node("stonefish_simulator")
+                           sf::Scalar rate,
+                           double rt_factor) 
+                           : Node("stonefish_simulator"), rtf_(rt_factor)
     {   
-        sf::ROS2SimulationManager* manager = new sf::ROS2SimulationManager(rate, scenarioPath, std::shared_ptr<rclcpp::Node>(this));
+        RCLCPP_INFO(this->get_logger(), "Starting Stonefish Simulator with RTF: %f", rtf_);
+
+        sf::ROS2SimulationManager* manager = new sf::ROS2SimulationManager(rate, scenarioPath, dataPath, std::shared_ptr<rclcpp::Node>(this));
+        manager->customRTF = rtf_;
+
         app_ = std::shared_ptr<sf::ROS2GraphicalSimulationApp>(new sf::ROS2GraphicalSimulationApp("Stonefish Simulator", 
                                                                                                  dataPath, s, h, manager));
         app_->Startup();
+        
+        // Timer for GUI Rendering (approx 60Hz)
         tickTimer_ = this->create_wall_timer(16667us, std::bind(&sf::ROS2GraphicalSimulationApp::Tick, app_));
+        manager->setRealtimeFactor(rtf_);
     };
 
+    ~StonefishNode() {
+    }
+
 private:
+
     std::shared_ptr<sf::ROS2GraphicalSimulationApp> app_;
     rclcpp::TimerBase::SharedPtr tickTimer_;
+    
+    // Clock Threading members
+    double rtf_;
 };
 
 int main(int argc, char **argv)
 {
 	rclcpp::init(argc, argv, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);
     
+    for(int i = 0; i < argc; i++) {
+        std::cout << "Arg " << i << ": " << argv[i] << std::endl;
+    }
+
     //Check number of command line arguments
 	if(argc < 7)
 	{
 		std::cout << "Not enough command-line arguments provided!" << std::endl;
 		exit(-1);
 	}
-
     //Parse the arguments
     std::string dataPath = std::string(argv[1]) + "/";
     std::string scenarioPath(argv[2]);
     sf::Scalar rate = atof(argv[3]);
+
+    std::cout << dataPath << std::endl;
 
 	sf::RenderSettings s;
     s.windowW = atoi(argv[4]);
@@ -91,6 +111,15 @@ int main(int argc, char **argv)
         s.aa = sf::RenderQuality::HIGH;
         s.ssr = sf::RenderQuality::HIGH;
     }
+    else if(quality == "disabled")
+    {
+        s.shadows = sf::RenderQuality::DISABLED;
+        s.ao = sf::RenderQuality::DISABLED;
+        s.atmosphere = sf::RenderQuality::DISABLED;
+        s.ocean = sf::RenderQuality::DISABLED;
+        s.aa = sf::RenderQuality::DISABLED;
+        s.ssr = sf::RenderQuality::DISABLED;
+    }
     else // "medium"
     {
         s.shadows = sf::RenderQuality::MEDIUM;
@@ -109,9 +138,20 @@ int main(int argc, char **argv)
     h.showSensors = false;
     h.showActuators = false;
     h.showForces = false;
-	
+
+    double rt_factor = 1.0;
+    if(argc < 8)
+	{
+		std::cout << "Assuming default realtime factor of 1.0" << std::endl;
+	}
+    else
+    {
+        std::cout << "Realtime factor: " << argv[7] << std::endl;
+        rt_factor = atof(argv[7]);
+    }
+
     // Start simulation
-    std::shared_ptr<StonefishNode> node(new StonefishNode(scenarioPath, dataPath, s, h, rate));
+    std::shared_ptr<StonefishNode> node(new StonefishNode(scenarioPath, dataPath, s, h, rate, rt_factor));
     rclcpp::spin(node);
     return 0;
 }

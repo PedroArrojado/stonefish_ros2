@@ -59,32 +59,47 @@ namespace sf
     class Contact;
     class USBL;
     class AnimatedEntity;
+    
+    // Domain expansion sensor suite
+    class Lidar;
+    class Altimeter;
+    class Barometer;
+    class Anemometer;
+    class Rangefinder;
 
     class ROS2Interface
     {
     public:
         ROS2Interface(const std::shared_ptr<rclcpp::Node> nh);
         void PublishTF(std::unique_ptr<tf2_ros::TransformBroadcaster>& br, const sf::Transform& T, const rclcpp::Time& t, const std::string &frame_id, const std::string &child_frame_id) const;
-        void PublishAccelerometer(rclcpp::PublisherBase::SharedPtr pub, Accelerometer* acc) const;
-        void PublishGyroscope(rclcpp::PublisherBase::SharedPtr pub, Gyroscope* gyro) const;
-        void PublishIMU(rclcpp::PublisherBase::SharedPtr pub, IMU* imu) const;
-        void PublishPressure(rclcpp::PublisherBase::SharedPtr pub, Pressure* press) const;
-        void PublishDVL(rclcpp::PublisherBase::SharedPtr pub, DVL* dvl) const;
-        void PublishDVLAltitude(rclcpp::PublisherBase::SharedPtr pub, DVL* dvl) const;
-        void PublishGPS(rclcpp::PublisherBase::SharedPtr pub, GPS* gps) const;
-        void PublishOdometry(rclcpp::PublisherBase::SharedPtr pub, Odometry* odom) const;
-        void PublishINS(rclcpp::PublisherBase::SharedPtr pub, INS* ins) const;
-        void PublishINSOdometry(rclcpp::PublisherBase::SharedPtr pub, INS* ins) const;
-        void PublishForceTorque(rclcpp::PublisherBase::SharedPtr pub, ForceTorque* ft) const;
-        void PublishEncoder(rclcpp::PublisherBase::SharedPtr pub, RotaryEncoder* enc) const;
-        void PublishMultibeam(rclcpp::PublisherBase::SharedPtr pub, Multibeam* mb) const;
-        void PublishMultibeamPCL(rclcpp::PublisherBase::SharedPtr pub, Multibeam* mb) const;
-        void PublishProfiler(rclcpp::PublisherBase::SharedPtr pub, Profiler* prof) const;
-        void PublishMultibeam2(rclcpp::PublisherBase::SharedPtr pub, Multibeam2* mb) const;
-        void PublishContact(rclcpp::PublisherBase::SharedPtr pub, Contact* cnt) const;
-        void PublishUSBL(rclcpp::PublisherBase::SharedPtr pub, rclcpp::PublisherBase::SharedPtr pubInfo, USBL* usbl) const;
-        void PublishTrajectoryState(rclcpp::PublisherBase::SharedPtr pubOdom, rclcpp::PublisherBase::SharedPtr pubIter, AnimatedEntity* anim) const;
-        void PublishEventBasedCamera(rclcpp::PublisherBase::SharedPtr pub, EventBasedCamera* ebc);
+        
+        void PublishAccelerometer(rclcpp::PublisherBase::SharedPtr pub, Accelerometer* acc, rclcpp::Time currentSimTime) const;
+        void PublishGyroscope(rclcpp::PublisherBase::SharedPtr pub, Gyroscope* gyro, rclcpp::Time currentSimTime) const;
+        void PublishIMU(rclcpp::PublisherBase::SharedPtr pub, IMU* imu, rclcpp::Time currentSimTime) const;
+        void PublishPressure(rclcpp::PublisherBase::SharedPtr pub, Pressure* press, rclcpp::Time currentSimTime) const;
+        void PublishDVL(rclcpp::PublisherBase::SharedPtr pub, DVL* dvl, rclcpp::Time currentSimTime) const;
+        void PublishDVLAltitude(rclcpp::PublisherBase::SharedPtr pub, DVL* dvl, rclcpp::Time currentSimTime) const;
+        void PublishGPS(rclcpp::PublisherBase::SharedPtr pub, GPS* gps, rclcpp::Time currentSimTime) const;
+        void PublishOdometry(rclcpp::PublisherBase::SharedPtr pub, Odometry* odom, rclcpp::Time currentSimTime) const;
+        void PublishINS(rclcpp::PublisherBase::SharedPtr pub, INS* ins, rclcpp::Time currentSimTime) const;
+        void PublishINSOdometry(rclcpp::PublisherBase::SharedPtr pub, INS* ins, rclcpp::Time currentSimTime) const;
+        void PublishForceTorque(rclcpp::PublisherBase::SharedPtr pub, ForceTorque* ft, rclcpp::Time currentSimTime) const;
+        void PublishEncoder(rclcpp::PublisherBase::SharedPtr pub, RotaryEncoder* enc, rclcpp::Time currentSimTime) const;
+        void PublishMultibeam(rclcpp::PublisherBase::SharedPtr pub, Multibeam* mb, rclcpp::Time currentSimTime) const;
+        void PublishMultibeamPCL(rclcpp::PublisherBase::SharedPtr pub, Multibeam* mb, rclcpp::Time currentSimTime) const;
+        void PublishProfiler(rclcpp::PublisherBase::SharedPtr pub, Profiler* prof, rclcpp::Time currentSimTime) const;
+        void PublishMultibeam2(rclcpp::PublisherBase::SharedPtr pub, Multibeam2* mb, rclcpp::Time currentSimTime) const;
+        void PublishContact(rclcpp::PublisherBase::SharedPtr pub, Contact* cnt, rclcpp::Time currentSimTime) const;
+        void PublishUSBL(rclcpp::PublisherBase::SharedPtr pub, rclcpp::PublisherBase::SharedPtr pubInfo, USBL* usbl, rclcpp::Time currentSimTime) const;
+        void PublishTrajectoryState(rclcpp::PublisherBase::SharedPtr pubOdom, rclcpp::PublisherBase::SharedPtr pubIter, AnimatedEntity* anim, rclcpp::Time currentSimTime) const;
+        void PublishEventBasedCamera(rclcpp::PublisherBase::SharedPtr pub, EventBasedCamera* ebc, rclcpp::Time currentSimTime);
+
+        // NEW: Domain expansion sensor callbacks:
+        void PublishLidar(rclcpp::PublisherBase::SharedPtr pub, Lidar* lidar, rclcpp::Time currentSimTime) const;
+        void PublishAltimeter(rclcpp::PublisherBase::SharedPtr pub, Altimeter* alt, rclcpp::Time currentSimTime) const;
+        void PublishAnemometer(rclcpp::PublisherBase::SharedPtr pub, Anemometer* anem, rclcpp::Time currentSimTime) const;
+        void PublishBarometer(rclcpp::PublisherBase::SharedPtr pub, Barometer* bar, rclcpp::Time currentSimTime) const;
+        void PublishRangeFinder(rclcpp::PublisherBase::SharedPtr pub, Rangefinder* rf, rclcpp::Time currentSimTime) const;
 
         static std::pair<sensor_msgs::msg::Image::SharedPtr, sensor_msgs::msg::CameraInfo::SharedPtr> GenerateCameraMsgPrototypes(Camera* cam, bool depth, const std::string frame_id = "");
         static std::tuple<sensor_msgs::msg::Image::SharedPtr, sensor_msgs::msg::CameraInfo::SharedPtr, sensor_msgs::msg::Image::SharedPtr> GenerateThermalCameraMsgPrototypes(ThermalCamera* cam);

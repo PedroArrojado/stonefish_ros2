@@ -29,6 +29,8 @@
 #include "geometry_msgs/msg/twist_with_covariance_stamped.hpp"
 #include "geometry_msgs/msg/wrench_stamped.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
+#include "geometry_msgs/msg/vector3_stamped.hpp"
+
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/fluid_pressure.hpp"
 #include "sensor_msgs/msg/range.hpp"
@@ -37,6 +39,7 @@
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+
 #include "visualization_msgs/msg/marker.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 #include "pcl/point_cloud.h"
@@ -63,6 +66,11 @@
 #include <Stonefish/sensors/scalar/Odometry.h>
 #include <Stonefish/sensors/scalar/Multibeam.h>
 #include <Stonefish/sensors/scalar/Profiler.h>
+#include <Stonefish/sensors/scalar/Altimeter.h>
+#include <Stonefish/sensors/scalar/Barometer.h>
+#include <Stonefish/sensors/scalar/RangeFinder.h>
+#include <Stonefish/sensors/scalar/Anemometer.h>
+
 #include <Stonefish/sensors/vision/ColorCamera.h>
 #include <Stonefish/sensors/vision/DepthCamera.h>
 #include <Stonefish/sensors/vision/ThermalCamera.h>
@@ -70,11 +78,14 @@
 #include <Stonefish/sensors/vision/SegmentationCamera.h>
 #include <Stonefish/sensors/vision/EventBasedCamera.h>
 #include <Stonefish/sensors/vision/Multibeam2.h>
+#include <Stonefish/sensors/vision/Lidar.h>
 #include <Stonefish/sensors/vision/FLS.h>
 #include <Stonefish/sensors/vision/SSS.h>
 #include <Stonefish/sensors/vision/MSIS.h>
 #include <Stonefish/sensors/Contact.h>
+
 #include <Stonefish/comms/USBL.h>
+
 #include <Stonefish/entities/AnimatedEntity.h>
 #include <Stonefish/core/SimulationApp.h>
 #include <Stonefish/core/SimulationManager.h>
@@ -106,14 +117,14 @@ void ROS2Interface::PublishTF(std::unique_ptr<tf2_ros::TransformBroadcaster>& br
     br->sendTransform(msg);
 }
 
-void ROS2Interface::PublishAccelerometer(rclcpp::PublisherBase::SharedPtr pub, Accelerometer* acc) const
+void ROS2Interface::PublishAccelerometer(rclcpp::PublisherBase::SharedPtr pub, Accelerometer* acc, rclcpp::Time currentSimTime) const
 {
     Sample s = acc->getLastSample();
     sf::Vector3 accelStdDev = sf::Vector3(acc->getSensorChannelDescription(0).stdDev, 
                                           acc->getSensorChannelDescription(1).stdDev,
                                           acc->getSensorChannelDescription(2).stdDev);
     geometry_msgs::msg::AccelWithCovarianceStamped msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = acc->getName();
     msg.accel.accel.linear.x = s.getValue(0);
     msg.accel.accel.linear.y = s.getValue(1);
@@ -124,14 +135,14 @@ void ROS2Interface::PublishAccelerometer(rclcpp::PublisherBase::SharedPtr pub, A
     std::static_pointer_cast<rclcpp::Publisher<geometry_msgs::msg::AccelWithCovarianceStamped>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishGyroscope(rclcpp::PublisherBase::SharedPtr pub, Gyroscope* gyro) const
+void ROS2Interface::PublishGyroscope(rclcpp::PublisherBase::SharedPtr pub, Gyroscope* gyro, rclcpp::Time currentSimTime) const
 {
     Sample s = gyro->getLastSample();
     sf::Vector3 avelocityStdDev = sf::Vector3(gyro->getSensorChannelDescription(0).stdDev, 
                                       gyro->getSensorChannelDescription(1).stdDev,
                                       gyro->getSensorChannelDescription(2).stdDev);
     geometry_msgs::msg::TwistWithCovarianceStamped msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = gyro->getName();
     msg.twist.twist.angular.x = s.getValue(0);
     msg.twist.twist.angular.y = s.getValue(1);
@@ -142,7 +153,7 @@ void ROS2Interface::PublishGyroscope(rclcpp::PublisherBase::SharedPtr pub, Gyros
     std::static_pointer_cast<rclcpp::Publisher<geometry_msgs::msg::TwistWithCovarianceStamped>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishIMU(rclcpp::PublisherBase::SharedPtr pub, IMU* imu) const
+void ROS2Interface::PublishIMU(rclcpp::PublisherBase::SharedPtr pub, IMU* imu, rclcpp::Time currentSimTime) const
 {
     Sample s = imu->getLastSample();
     sf::Vector3 rpy = sf::Vector3(s.getValue(0), s.getValue(1), s.getValue(2));
@@ -158,7 +169,7 @@ void ROS2Interface::PublishIMU(rclcpp::PublisherBase::SharedPtr pub, IMU* imu) c
                                         imu->getSensorChannelDescription(8).stdDev);
     //Variance is sigma^2!
     sensor_msgs::msg::Imu msg;
-    msg.header.stamp = nh_->get_clock()->now();    
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = imu->getName();
     msg.orientation.x = quat.x();
     msg.orientation.y = quat.y();
@@ -182,11 +193,11 @@ void ROS2Interface::PublishIMU(rclcpp::PublisherBase::SharedPtr pub, IMU* imu) c
     std::static_pointer_cast<rclcpp::Publisher<sensor_msgs::msg::Imu>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishPressure(rclcpp::PublisherBase::SharedPtr pub, Pressure* press) const
+void ROS2Interface::PublishPressure(rclcpp::PublisherBase::SharedPtr pub, Pressure* press, rclcpp::Time currentSimTime) const
 {
     Sample s = press->getLastSample();
     sensor_msgs::msg::FluidPressure msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = press->getName();
     msg.fluid_pressure = s.getValue(0);
     msg.variance = press->getSensorChannelDescription(0).stdDev;
@@ -194,7 +205,7 @@ void ROS2Interface::PublishPressure(rclcpp::PublisherBase::SharedPtr pub, Pressu
     std::static_pointer_cast<rclcpp::Publisher<sensor_msgs::msg::FluidPressure>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishDVL(rclcpp::PublisherBase::SharedPtr pub, DVL* dvl) const
+void ROS2Interface::PublishDVL(rclcpp::PublisherBase::SharedPtr pub, DVL* dvl, rclcpp::Time currentSimTime) const
 {
     //Get data
     Sample s = dvl->getLastSample();
@@ -203,7 +214,7 @@ void ROS2Interface::PublishDVL(rclcpp::PublisherBase::SharedPtr pub, DVL* dvl) c
     vVariance *= vVariance; //Variance is square of standard deviation
     //Publish DVL message
     stonefish_ros2::msg::DVL msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = dvl->getName();
     msg.velocity.x = s.getValue(0);
     msg.velocity.y = s.getValue(1);
@@ -215,7 +226,7 @@ void ROS2Interface::PublishDVL(rclcpp::PublisherBase::SharedPtr pub, DVL* dvl) c
     std::static_pointer_cast<rclcpp::Publisher<stonefish_ros2::msg::DVL>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishDVLAltitude(rclcpp::PublisherBase::SharedPtr pub, DVL* dvl) const
+void ROS2Interface::PublishDVLAltitude(rclcpp::PublisherBase::SharedPtr pub, DVL* dvl, rclcpp::Time currentSimTime) const
 {
     //Get data
     Sample s = dvl->getLastSample();
@@ -226,7 +237,7 @@ void ROS2Interface::PublishDVLAltitude(rclcpp::PublisherBase::SharedPtr pub, DVL
     sf::Scalar beamAngle = dvl->getBeamAngle();
     //Publish range message
     sensor_msgs::msg::Range msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = dvl->getName() + "_altitude";
     msg.radiation_type = msg.ULTRASOUND;
     msg.field_of_view = beamAngle*2;
@@ -236,12 +247,12 @@ void ROS2Interface::PublishDVLAltitude(rclcpp::PublisherBase::SharedPtr pub, DVL
     std::static_pointer_cast<rclcpp::Publisher<sensor_msgs::msg::Range>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishGPS(rclcpp::PublisherBase::SharedPtr pub, GPS* gps) const
+void ROS2Interface::PublishGPS(rclcpp::PublisherBase::SharedPtr pub, GPS* gps, rclcpp::Time currentSimTime) const
 {
     Sample s = gps->getLastSample();
 
     sensor_msgs::msg::NavSatFix msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = gps->getName();
     msg.status.service = msg.status.SERVICE_GPS;
 
@@ -266,11 +277,11 @@ void ROS2Interface::PublishGPS(rclcpp::PublisherBase::SharedPtr pub, GPS* gps) c
     std::static_pointer_cast<rclcpp::Publisher<sensor_msgs::msg::NavSatFix>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishOdometry(rclcpp::PublisherBase::SharedPtr pub, Odometry* odom) const
+void ROS2Interface::PublishOdometry(rclcpp::PublisherBase::SharedPtr pub, Odometry* odom, rclcpp::Time currentSimTime) const
 {
     Sample s = odom->getLastSample();
     nav_msgs::msg::Odometry msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = "world_ned";
     msg.child_frame_id = odom->getName();
     msg.pose.pose.position.x = s.getValue(0);
@@ -289,14 +300,14 @@ void ROS2Interface::PublishOdometry(rclcpp::PublisherBase::SharedPtr pub, Odomet
     std::static_pointer_cast<rclcpp::Publisher<nav_msgs::msg::Odometry>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishINS(rclcpp::PublisherBase::SharedPtr pub, INS* ins) const
+void ROS2Interface::PublishINS(rclcpp::PublisherBase::SharedPtr pub, INS* ins, rclcpp::Time currentSimTime) const
 {
     sf::Scalar lat, lon, h;
     SimulationApp::getApp()->getSimulationManager()->getNED()->Ned2Geodetic(0.0, 0.0, 0.0, lat, lon, h);
 
     Sample s = ins->getLastSample();
     stonefish_ros2::msg::INS msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = ins->getName();
     msg.latitude = s.getValue(4);
     msg.longitude = s.getValue(5);
@@ -318,11 +329,11 @@ void ROS2Interface::PublishINS(rclcpp::PublisherBase::SharedPtr pub, INS* ins) c
     std::static_pointer_cast<rclcpp::Publisher<stonefish_ros2::msg::INS>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishINSOdometry(rclcpp::PublisherBase::SharedPtr pub, INS* ins) const
+void ROS2Interface::PublishINSOdometry(rclcpp::PublisherBase::SharedPtr pub, INS* ins, rclcpp::Time currentSimTime) const
 {
     Sample s = ins->getLastSample();
     nav_msgs::msg::Odometry msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = "world_ned";
     msg.child_frame_id = ins->getName();
     msg.pose.pose.position.x = s.getValue(0);
@@ -342,11 +353,11 @@ void ROS2Interface::PublishINSOdometry(rclcpp::PublisherBase::SharedPtr pub, INS
     std::static_pointer_cast<rclcpp::Publisher<nav_msgs::msg::Odometry>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishForceTorque(rclcpp::PublisherBase::SharedPtr pub, ForceTorque* ft) const
+void ROS2Interface::PublishForceTorque(rclcpp::PublisherBase::SharedPtr pub, ForceTorque* ft, rclcpp::Time currentSimTime) const
 {
     Sample s = ft->getLastSample();    
     geometry_msgs::msg::WrenchStamped msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = ft->getName();
     msg.wrench.force.x = s.getValue(0);
     msg.wrench.force.y = s.getValue(1);
@@ -357,11 +368,11 @@ void ROS2Interface::PublishForceTorque(rclcpp::PublisherBase::SharedPtr pub, For
     std::static_pointer_cast<rclcpp::Publisher<geometry_msgs::msg::WrenchStamped>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishEncoder(rclcpp::PublisherBase::SharedPtr pub, RotaryEncoder* enc) const
+void ROS2Interface::PublishEncoder(rclcpp::PublisherBase::SharedPtr pub, RotaryEncoder* enc, rclcpp::Time currentSimTime) const
 {
     Sample s = enc->getLastSample();
     sensor_msgs::msg::JointState msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = enc->getName();
     msg.name.resize(1);
     msg.position.resize(1);
@@ -372,7 +383,7 @@ void ROS2Interface::PublishEncoder(rclcpp::PublisherBase::SharedPtr pub, RotaryE
     std::static_pointer_cast<rclcpp::Publisher<sensor_msgs::msg::JointState>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishMultibeam(rclcpp::PublisherBase::SharedPtr pub, Multibeam* mb) const
+void ROS2Interface::PublishMultibeam(rclcpp::PublisherBase::SharedPtr pub, Multibeam* mb, rclcpp::Time currentSimTime) const
 {
     Sample sample = mb->getLastSample();
     SensorChannel channel = mb->getSensorChannelDescription(0);
@@ -382,7 +393,7 @@ void ROS2Interface::PublishMultibeam(rclcpp::PublisherBase::SharedPtr pub, Multi
     size_t angSteps = distances.size();
 
     sensor_msgs::msg::LaserScan msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = mb->getName();
     
     msg.angle_min = -angRange/sf::Scalar(2); // start angle of the scan [rad]
@@ -412,7 +423,7 @@ void ROS2Interface::PublishMultibeam(rclcpp::PublisherBase::SharedPtr pub, Multi
     std::static_pointer_cast<rclcpp::Publisher<sensor_msgs::msg::LaserScan>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishMultibeamPCL(rclcpp::PublisherBase::SharedPtr pub, Multibeam* mb) const
+void ROS2Interface::PublishMultibeamPCL(rclcpp::PublisherBase::SharedPtr pub, Multibeam* mb, rclcpp::Time currentSimTime) const
 {
     Sample sample = mb->getLastSample();
     SensorChannel channel = mb->getSensorChannelDescription(0);
@@ -442,7 +453,7 @@ void ROS2Interface::PublishMultibeamPCL(rclcpp::PublisherBase::SharedPtr pub, Mu
     pcl::toPCLPointCloud2(*cloud, pclMsg);
 
     sensor_msgs::msg::PointCloud2 msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = mb->getName();
     pcl_conversions::fromPCL(pclMsg, msg);
     
@@ -456,13 +467,13 @@ void ROS2Interface::PublishMultibeamPCL(rclcpp::PublisherBase::SharedPtr pub, Mu
     }
 }
 
-void ROS2Interface::PublishProfiler(rclcpp::PublisherBase::SharedPtr pub, Profiler* prof) const
+void ROS2Interface::PublishProfiler(rclcpp::PublisherBase::SharedPtr pub, Profiler* prof, rclcpp::Time currentSimTime) const
 {
     const std::vector<Sample>* hist = prof->getHistory();
     SensorChannel channel = prof->getSensorChannelDescription(1); // range channel
 
     sensor_msgs::msg::LaserScan msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = prof->getName();
     
     msg.angle_min = hist->front().getValue(0);
@@ -495,7 +506,7 @@ void ROS2Interface::PublishProfiler(rclcpp::PublisherBase::SharedPtr pub, Profil
     std::static_pointer_cast<rclcpp::Publisher<sensor_msgs::msg::LaserScan>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishMultibeam2(rclcpp::PublisherBase::SharedPtr pub, Multibeam2* mb) const
+void ROS2Interface::PublishMultibeam2(rclcpp::PublisherBase::SharedPtr pub, Multibeam2* mb, rclcpp::Time currentSimTime) const
 {
     uint32_t hRes, vRes;
     mb->getResolution(hRes, vRes);
@@ -537,7 +548,7 @@ void ROS2Interface::PublishMultibeam2(rclcpp::PublisherBase::SharedPtr pub, Mult
     pcl::toPCLPointCloud2(*cloud, pclMsg);
 
     sensor_msgs::msg::PointCloud2 msg;
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.header.frame_id = mb->getName();
     pcl_conversions::fromPCL(pclMsg, msg);
 
@@ -551,7 +562,116 @@ void ROS2Interface::PublishMultibeam2(rclcpp::PublisherBase::SharedPtr pub, Mult
     }
 }
 
-void ROS2Interface::PublishContact(rclcpp::PublisherBase::SharedPtr pub, Contact* cnt) const
+void ROS2Interface::PublishLidar(rclcpp::PublisherBase::SharedPtr pub, Lidar* lidar, rclcpp::Time currentSimTime) const
+{
+    uint32_t hRes, vRes;
+    lidar->getResolution(hRes, vRes);
+    glm::vec2 range = lidar->getRangeLimits();
+
+    const float* data = (const float*)lidar->getRangeDataPointer();
+    const glm::vec3* dirs = lidar->getRayDirections();
+    if(data == nullptr || dirs == nullptr)
+        return;
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    cloud->header.frame_id = lidar->getName();
+    cloud->is_dense = false;
+
+    for(uint32_t v=0; v<vRes; ++v)
+    {
+        const uint32_t row = v*hRes;
+        for(uint32_t h=0; h<hRes; ++h)
+        {
+            const float r = data[row + h];
+            if(r > range.x && r < range.y)   // keep only valid returns
+            {
+                const glm::vec3 p = dirs[row + h] * r;   // sensor-frame REP-103 point
+                pcl::PointXYZ pt;
+                pt.x = p.x; pt.y = p.y; pt.z = p.z;
+                cloud->push_back(pt);
+            }
+        }
+    }
+    cloud->width = (uint32_t)cloud->size();
+    cloud->height = 1;
+
+    pcl::PCLPointCloud2 pclMsg;
+    pcl::toPCLPointCloud2(*cloud, pclMsg);
+    sensor_msgs::msg::PointCloud2 msg;
+    pcl_conversions::fromPCL(pclMsg, msg);
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
+    msg.header.frame_id = lidar->getName();
+
+    try
+    {
+        std::static_pointer_cast<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>>(pub)->publish(msg);
+    }
+    catch(std::runtime_error& e)
+    {
+        RCLCPP_ERROR_STREAM(nh_->get_logger(), "Runtime error while publishing lidar data: " << e.what());
+    }
+}
+
+void ROS2Interface::PublishAnemometer(rclcpp::PublisherBase::SharedPtr pub, Anemometer* anem, rclcpp::Time currentSimTime) const
+{
+    Sample s = anem->getLastSample();
+    geometry_msgs::msg::Vector3Stamped msg;
+    msg.header.frame_id = anem->getName();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
+    msg.vector.x = s.getValue(0);
+    msg.vector.y = s.getValue(1);
+    msg.vector.z = s.getValue(2);
+
+    std::static_pointer_cast<rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>>(pub)->publish(msg);
+}
+
+void ROS2Interface::PublishAltimeter(rclcpp::PublisherBase::SharedPtr pub, Altimeter* alt, rclcpp::Time currentSimTime) const
+{
+    Sample s = alt->getLastSample();
+    sensor_msgs::msg::Range msg;
+
+    msg.header.frame_id = alt->getName();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
+    msg.range = s.getValue(0);
+    msg.max_range = alt->getMaxRange();
+    msg.min_range = alt->getMinRange();
+    // msg.field_of_view = alt->getFOV() <-- worth implementing?
+    // msg.radiation_type = alt->getRadiationType() <-- worth implementing?
+    // msg.variance = alt->getVariance() <-- worth implementing?
+    
+    std::static_pointer_cast<rclcpp::Publisher<sensor_msgs::msg::Range>>(pub)->publish(msg);
+}
+
+void ROS2Interface::PublishBarometer(rclcpp::PublisherBase::SharedPtr pub, Barometer* bar, rclcpp::Time currentSimTime) const
+{
+    Sample s = bar->getLastSample();
+    sensor_msgs::msg::FluidPressure msg;
+
+    msg.header.frame_id = bar->getName();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
+    msg.fluid_pressure = s.getValue(0);
+    // msg.variance = bar->channels[0].stdDev <-- worth implementing?
+    
+    std::static_pointer_cast<rclcpp::Publisher<sensor_msgs::msg::FluidPressure>>(pub)->publish(msg);
+}
+
+void ROS2Interface::PublishRangeFinder(rclcpp::PublisherBase::SharedPtr pub, Rangefinder* rf, rclcpp::Time currentSimTime) const
+{
+    sensor_msgs::msg::Range msg;
+    msg.header.frame_id = rf->getName();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
+    msg.range =  rf->getRange();
+    msg.max_range = rf->getMaxRange();
+    msg.min_range = rf->getMinRange();
+    msg.field_of_view = rf->getFOV();
+    // msg.radiation_type = rf->getRadiationType() <-- worth implementing?
+    // msg.variance = rf->getVariance() <-- worth implementing?
+
+    std::static_pointer_cast<rclcpp::Publisher<sensor_msgs::msg::Range>>(pub)->publish(msg);
+}
+
+
+void ROS2Interface::PublishContact(rclcpp::PublisherBase::SharedPtr pub, Contact* cnt, rclcpp::Time currentSimTime) const
 {
     if(cnt->getHistory().size() == 0)
         return;
@@ -561,7 +681,7 @@ void ROS2Interface::PublishContact(rclcpp::PublisherBase::SharedPtr pub, Contact
     //Publish marker message
     visualization_msgs::msg::Marker msg;
     msg.header.frame_id = "world_ned";
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.ns = cnt->getName();
     msg.id = 0;
     msg.type = visualization_msgs::msg::Marker::ARROW;
@@ -587,7 +707,7 @@ void ROS2Interface::PublishContact(rclcpp::PublisherBase::SharedPtr pub, Contact
     std::static_pointer_cast<rclcpp::Publisher<visualization_msgs::msg::Marker>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishUSBL(rclcpp::PublisherBase::SharedPtr pub, rclcpp::PublisherBase::SharedPtr pubInfo, USBL* usbl) const
+void ROS2Interface::PublishUSBL(rclcpp::PublisherBase::SharedPtr pub, rclcpp::PublisherBase::SharedPtr pubInfo, USBL* usbl, rclcpp::Time currentSimTime) const
 {
     std::map<uint64_t, BeaconInfo>& beacons = usbl->getBeaconInfo();
     if(beacons.size() == 0)
@@ -598,7 +718,7 @@ void ROS2Interface::PublishUSBL(rclcpp::PublisherBase::SharedPtr pub, rclcpp::Pu
     stonefish_ros2::msg::BeaconInfo info;
     
     marker.header.frame_id = usbl->getName();
-    marker.header.stamp = nh_->get_clock()->now();
+    marker.header.stamp = currentSimTime;
     info.header.frame_id = marker.header.frame_id;
     info.header.stamp = marker.header.stamp;
 
@@ -641,7 +761,7 @@ void ROS2Interface::PublishUSBL(rclcpp::PublisherBase::SharedPtr pub, rclcpp::Pu
     std::static_pointer_cast<rclcpp::Publisher<visualization_msgs::msg::MarkerArray>>(pub)->publish(msg);
 }
 
-void ROS2Interface::PublishTrajectoryState(rclcpp::PublisherBase::SharedPtr pubOdom, rclcpp::PublisherBase::SharedPtr pubIter, AnimatedEntity* anim) const
+void ROS2Interface::PublishTrajectoryState(rclcpp::PublisherBase::SharedPtr pubOdom, rclcpp::PublisherBase::SharedPtr pubIter, AnimatedEntity* anim, rclcpp::Time currentSimTime) const
 {
     sf::Trajectory* tr = anim->getTrajectory();
     sf::Transform T = tr->getInterpolatedTransform();
@@ -653,7 +773,7 @@ void ROS2Interface::PublishTrajectoryState(rclcpp::PublisherBase::SharedPtr pubO
     //Odometry message
     nav_msgs::msg::Odometry msg;
     msg.header.frame_id = "world_ned";
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     msg.child_frame_id = anim->getName();
     msg.pose.pose.position.x = p.x();
     msg.pose.pose.position.y = p.y();
@@ -677,7 +797,7 @@ void ROS2Interface::PublishTrajectoryState(rclcpp::PublisherBase::SharedPtr pubO
     std::static_pointer_cast<rclcpp::Publisher<stonefish_ros2::msg::Int32Stamped>>(pubIter)->publish(msg2);
 }
 
-void ROS2Interface::PublishEventBasedCamera(rclcpp::PublisherBase::SharedPtr pub, EventBasedCamera* ebc)
+void ROS2Interface::PublishEventBasedCamera(rclcpp::PublisherBase::SharedPtr pub, EventBasedCamera* ebc, rclcpp::Time currentSimTime)
 {
     //Get access to event texture
     int32_t* data = (int32_t*)ebc->getImageDataPointer();
@@ -685,7 +805,7 @@ void ROS2Interface::PublishEventBasedCamera(rclcpp::PublisherBase::SharedPtr pub
     //Event array message
     stonefish_ros2::msg::EventArray msg;
     msg.header.frame_id = ebc->getName();
-    msg.header.stamp = nh_->get_clock()->now();
+    msg.header.stamp = currentSimTime;  // NEW: Publish sim time instead of walltime
     ebc->getResolution(msg.width, msg.height);
     msg.events.resize(ebc->getLastEventCount());
     for(size_t i=0; i<msg.events.size(); ++i)
@@ -958,9 +1078,9 @@ std::pair<sensor_msgs::msg::Image::SharedPtr, sensor_msgs::msg::Image::SharedPtr
     sensor_msgs::msg::Image::SharedPtr img = std::make_shared<sensor_msgs::msg::Image>();
     img->header.frame_id = fls->getName();
     fls->getResolution(img->width, img->height);
-    img->encoding = formatInfo.first;
+    img->encoding = "mono8";
     img->is_bigendian = 0;
-    img->step = img->width * formatInfo.second;
+    img->step = img->width;
     img->data.resize(img->step * img->height);
 
     //Display message
@@ -983,9 +1103,9 @@ std::pair<sensor_msgs::msg::Image::SharedPtr, sensor_msgs::msg::Image::SharedPtr
     sensor_msgs::msg::Image::SharedPtr img = std::make_shared<sensor_msgs::msg::Image>();
     img->header.frame_id = sss->getName();
     sss->getResolution(img->width, img->height);
-    img->encoding = formatInfo.first;
+    img->encoding = "mono8";
     img->is_bigendian = 0;
-    img->step = img->width * formatInfo.second;
+    img->step = img->width;
     img->data.resize(img->step * img->height);
 
     //Display message
@@ -1008,9 +1128,9 @@ std::pair<sensor_msgs::msg::Image::SharedPtr, sensor_msgs::msg::Image::SharedPtr
     sensor_msgs::msg::Image::SharedPtr img = std::make_shared<sensor_msgs::msg::Image>();
     img->header.frame_id = msis->getName();
     msis->getResolution(img->width, img->height);
-    img->encoding = formatInfo.first;
+    img->encoding = "mono8";
     img->is_bigendian = 0;
-    img->step = img->width * formatInfo.second;
+    img->step = img->width;
     img->data.resize(img->step * img->height);
 
     //Display message

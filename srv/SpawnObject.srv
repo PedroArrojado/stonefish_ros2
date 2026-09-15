@@ -1,0 +1,8 @@
+string path
+string name
+geometry_msgs/Vector3 xyz
+geometry_msgs/Vector3 rpy
+
+---
+bool success
+string message
