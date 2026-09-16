@@ -478,102 +478,7 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
     rosgraph_msgs::msg::Clock clockMsg;
     clockMsg.clock.sec    = static_cast<int32_t>(sim_us / 1000000);
     clockMsg.clock.nanosec = static_cast<uint32_t>((sim_us % 1000000) * 1000);
-    clockPub_->publish(clockMsg);
-
-    currentSimTime_ = rclcpp::Time(
-        static_cast<int32_t>(sim_us / 1000000),
-        static_cast<uint32_t>((sim_us % 1000000) * 1000),
-        RCL_ROS_TIME
-    );
-
-    const uint64_t dt_us = std::max<uint64_t>(1,
-        static_cast<uint64_t>(std::llround(static_cast<double>(timeStep) * 1e6)));
-
-    //////////////////////////// Sample wave height at origin for monitoring spectral params ////////////////////////////
-    // if(waveHeights_pub_ && getOcean())
-    // {
-    //     // 4x4 grid, offsets chosen off any multiple of the 101 m / 893 m
-    //     // cascade periods so points don't alias onto the same repeating pattern.
-    //     static const std::array<double, 4> xs = {0.0, 137.0, 251.0, 389.0};
-    //     static const std::array<double, 4> ys = {0.0, 149.0, 277.0, 401.0};
-
-    //     std_msgs::msg::Float64MultiArray waveHeightsMsg;
-    //     waveHeightsMsg.data.reserve(xs.size() * ys.size());
-
-    //     auto* glOcean = getOcean()->getOpenGLOcean();
-    //     for (double x : xs)
-    //         for (double y : ys)
-    //             waveHeightsMsg.data.push_back(glOcean->ComputeWaveHeight(x, y));
-
-    //     waveHeights_pub_->publish(waveHeightsMsg);
-    // }
-    
-    //////////////////////////// AUTHORITY MANAGEMENT ////////////////////////////
-    {
-    std::unique_lock<std::mutex> lk(authority_mutex);
-
-    // (1) Settle: charge the step that just completed against every ACTIVE stepper.
-    for (auto & [id, node] : authorityNodes_) {
-        if (node.mode != AuthorityMode::STEPPER || !node.stepper_active_) continue;
-        node.remaining_us_ = (node.remaining_us_ > dt_us) ? (node.remaining_us_ - dt_us) : 0;
-        // A charged step only ran because it was affordable, so crossing below dt here
-        // means we JUST entered starvation: start the watchdog grace now.
-        if (node.remaining_us_ < dt_us)
-            node.hold_started_ = std::chrono::steady_clock::now();
-    }
-
-    // (2) Gate the NEXT step: block while any authority still holds the sim.
-    while (true) {
-        auto now = std::chrono::steady_clock::now();
-        auto next_deadline = std::chrono::steady_clock::time_point::max();
-        bool still_holding = false;
-
-        for (auto & [id, node] : authorityNodes_) {
-            if (node.mode == AuthorityMode::VOTER) {
-                if (node.permissionToStep_) continue;              // not holding
-                if (node.authority_timeout_ms > 0) {
-                    auto deadline = node.hold_started_
-                                  + std::chrono::milliseconds(node.authority_timeout_ms);
-                    if (deadline <= now) {
-                        RCLCPP_WARN(nh_->get_logger(),
-                            "[sim_mgr] Voter '%s' (ID %ld) hold timed out after %ld ms, force-releasing",
-                            node.node_name.c_str(), id, node.authority_timeout_ms);
-                        node.permissionToStep_ = true;
-                        continue;
-                    }
-                    if (deadline < next_deadline) next_deadline = deadline;
-                }
-                still_holding = true;
-            } else { // STEPPER
-                if (!node.stepper_active_) continue;               // inactive: does not constrain
-                if (node.remaining_us_ >= dt_us) continue;         // can afford next step: not holding
-
-                if (node.authority_timeout_ms > 0) {
-                    auto deadline = node.hold_started_
-                                  + std::chrono::milliseconds(node.authority_timeout_ms);
-                    if (deadline <= now) {
-                        RCLCPP_WARN(nh_->get_logger(),
-                            "[sim_mgr] Stepper '%s' (ID %ld) starved for %ld ms, going inactive",
-                            node.node_name.c_str(), id, node.authority_timeout_ms);
-                        node.stepper_active_ = false;
-                        node.remaining_us_   = 0;
-                        continue;
-                    }
-                    if (deadline < next_deadline) next_deadline = deadline;
-                }
-                still_holding = true;
-            }
-        }
-
-        if (!still_holding) break;
-
-        if (next_deadline == std::chrono::steady_clock::time_point::max())
-            authority_cv.wait(lk);
-        else
-            authority_cv.wait_until(lk, next_deadline);
-    }
-    }
-	
+   	
     // NEW: Publishers now take sim time instead of sampling wall time 
     // Useful for syncing with use_sim_time for RTF scaled runs vvv
 
@@ -951,6 +856,103 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
                 )->publish(msg);
         }
     }
+
+    clockPub_->publish(clockMsg);
+
+    currentSimTime_ = rclcpp::Time(
+        static_cast<int32_t>(sim_us / 1000000),
+        static_cast<uint32_t>((sim_us % 1000000) * 1000),
+        RCL_ROS_TIME
+    );
+
+    const uint64_t dt_us = std::max<uint64_t>(1,
+        static_cast<uint64_t>(std::llround(static_cast<double>(timeStep) * 1e6)));
+
+    //////////////////////////// Sample wave height at origin for monitoring spectral params ////////////////////////////
+    // if(waveHeights_pub_ && getOcean())
+    // {
+    //     // 4x4 grid, offsets chosen off any multiple of the 101 m / 893 m
+    //     // cascade periods so points don't alias onto the same repeating pattern.
+    //     static const std::array<double, 4> xs = {0.0, 137.0, 251.0, 389.0};
+    //     static const std::array<double, 4> ys = {0.0, 149.0, 277.0, 401.0};
+
+    //     std_msgs::msg::Float64MultiArray waveHeightsMsg;
+    //     waveHeightsMsg.data.reserve(xs.size() * ys.size());
+
+    //     auto* glOcean = getOcean()->getOpenGLOcean();
+    //     for (double x : xs)
+    //         for (double y : ys)
+    //             waveHeightsMsg.data.push_back(glOcean->ComputeWaveHeight(x, y));
+
+    //     waveHeights_pub_->publish(waveHeightsMsg);
+    // }
+    
+    //////////////////////////// AUTHORITY MANAGEMENT ////////////////////////////
+    {
+    std::unique_lock<std::mutex> lk(authority_mutex);
+
+    // (1) Settle: charge the step that just completed against every ACTIVE stepper.
+    for (auto & [id, node] : authorityNodes_) {
+        if (node.mode != AuthorityMode::STEPPER || !node.stepper_active_) continue;
+        node.remaining_us_ = (node.remaining_us_ > dt_us) ? (node.remaining_us_ - dt_us) : 0;
+        // A charged step only ran because it was affordable, so crossing below dt here
+        // means we JUST entered starvation: start the watchdog grace now.
+        if (node.remaining_us_ < dt_us)
+            node.hold_started_ = std::chrono::steady_clock::now();
+    }
+
+    // (2) Gate the NEXT step: block while any authority still holds the sim.
+    while (true) {
+        auto now = std::chrono::steady_clock::now();
+        auto next_deadline = std::chrono::steady_clock::time_point::max();
+        bool still_holding = false;
+
+        for (auto & [id, node] : authorityNodes_) {
+            if (node.mode == AuthorityMode::VOTER) {
+                if (node.permissionToStep_) continue;              // not holding
+                if (node.authority_timeout_ms > 0) {
+                    auto deadline = node.hold_started_
+                                  + std::chrono::milliseconds(node.authority_timeout_ms);
+                    if (deadline <= now) {
+                        RCLCPP_WARN(nh_->get_logger(),
+                            "[sim_mgr] Voter '%s' (ID %ld) hold timed out after %ld ms, force-releasing",
+                            node.node_name.c_str(), id, node.authority_timeout_ms);
+                        node.permissionToStep_ = true;
+                        continue;
+                    }
+                    if (deadline < next_deadline) next_deadline = deadline;
+                }
+                still_holding = true;
+            } else { // STEPPER
+                if (!node.stepper_active_) continue;               // inactive: does not constrain
+                if (node.remaining_us_ >= dt_us) continue;         // can afford next step: not holding
+
+                if (node.authority_timeout_ms > 0) {
+                    auto deadline = node.hold_started_
+                                  + std::chrono::milliseconds(node.authority_timeout_ms);
+                    if (deadline <= now) {
+                        RCLCPP_WARN(nh_->get_logger(),
+                            "[sim_mgr] Stepper '%s' (ID %ld) starved for %ld ms, going inactive",
+                            node.node_name.c_str(), id, node.authority_timeout_ms);
+                        node.stepper_active_ = false;
+                        node.remaining_us_   = 0;
+                        continue;
+                    }
+                    if (deadline < next_deadline) next_deadline = deadline;
+                }
+                still_holding = true;
+            }
+        }
+
+        if (!still_holding) break;
+
+        if (next_deadline == std::chrono::steady_clock::time_point::max())
+            authority_cv.wait(lk);
+        else
+            authority_cv.wait_until(lk, next_deadline);
+    }
+    }
+
 
     //////////////////////////////////////////////ACTUATORS//////////////////////////////////////////
     for(size_t i=0; i<rosRobots_.size(); ++i)

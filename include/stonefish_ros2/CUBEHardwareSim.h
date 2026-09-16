@@ -2,6 +2,7 @@
 #define CUBE_HW_SIM_HPP
 
 #include <rclcpp/rclcpp.hpp>
+#include <rosgraph_msgs/msg/clock.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -13,12 +14,16 @@
 #include <netinet/in.h>
 
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
-#include <chrono>
 
 #include "stonefish_ros2/srv/authority_node_sign_in.hpp"
 #include "stonefish_ros2/srv/authority_node_sign_out.hpp"
@@ -35,27 +40,56 @@ namespace stonefish_ros2
  * Bridges ArduPilot SITL (JSON backend, UDP) to/from a Stonefish ROS 2
  * simulation.
  *
+ * ## Execution model (lock-step)
+ *
+ * There is no ROS timer. The node is driven entirely by the simulation clock
+ * and runs the SITL exchange on a dedicated thread:
+ *
+ *   executor thread          exchange thread
+ *   ---------------          ---------------
+ *   cbClock(t):              wait until latest_sim_ns_ >= grant_target_ns_
+ *     latest_sim_ns_ = t       snapshot IMU/odom
+ *     if t >= target:          build JSON, drain socket, sendto
+ *       notify                 blocking recv (poll) for the PWM reply
+ *     else: return             publishActuators(pwm)   <-- only on a real exchange
+ *                              grant_target_ns_ += advance     (BEFORE granting)
+ *                              grant_sim(advance_ns_)
+ *
+ * `grant_target_ns_` is advanced *before* the grant is published, otherwise a
+ * `/clock` message can race ahead of the bookkeeping and the trigger is lost
+ * (which deadlocks: the sim is parked at the gate and publishes no further
+ * clock, so there is no second chance).
+ *
+ * Because the sim stops producing `/clock` while it is parked, a dropped clock
+ * message is a permanent stall. The clock subscription therefore defaults to
+ * RELIABLE QoS with real depth, and `clock_stall_ms` acts as a backstop.
+ *
  * ## SITL protocol (ArduPilot JSON backend)
  *
- *   SITL → Node : binary struct  { uint16 magic, uint16 frame_rate,
+ *   SITL -> Node : binary struct  { uint16 magic, uint16 frame_rate,
  *                                   uint32 frame_count, uint16 pwm[16] }
  *
- *   Node → SITL : newline-delimited JSON
+ *   Node -> SITL : newline-delimited JSON
  *                 {
  *                   "timestamp"  : double,
  *                   "imu"        : { "gyro": [p,q,r], "accel_body": [ax,ay,az] },
  *                   "position"   : [x, y, z],
- *                   "attitude"   : [roll, pitch, yaw],
- *                   "velocity"   : [vn, ve, vd, p, q, r]
+ *                   "quaternion" : [w, x, y, z],
+ *                   "velocity"   : [vn, ve, vd]
  *                 }
+ *
+ *   `frame_count` is monotonic on ArduPilot's side. Any delta other than 1
+ *   means ArduPilot ran a frame we did not drive (one of the early-return
+ *   paths in recv_fdm, or its ~1 s servo resend) and the 1:1 invariant is
+ *   broken even though our own send/recv pairing still looks consistent.
  *
  * ## Frame conventions
  *
  *   Stonefish/ROS 2 : ENU world frame, FLU body frame
  *   ArduPilot SITL  : NED world frame, FRD body frame
  *
- *   FLU → FRD  :  (ax, ay, az) → (ax, -ay, -az)  |  (p,q,r) → (p,-q,-r)
- *   ENU → NED  :  (vE, vN, vU) → (vN, vE, -vU)
+ *   FLU -> FRD  :  (ax, ay, az) -> (ax, -ay, -az)  |  (p,q,r) -> (p,-q,-r)
+ *   ENU -> NED  :  (vE, vN, vU) -> (vN, vE, -vU)
  *
  * ## Stonefish publishers (per-channel, grouped by (topic, type))
  *
@@ -63,11 +97,11 @@ namespace stonefish_ros2
  *   (`sitl_index`) to ONE slot (`output_index`) of an output message on `topic`.
  *   The channel `type` selects the message and how the value is applied:
  *
- *     type = "thruster"    → std_msgs/Float64MultiArray (thrusters). The value is
+ *     type = "thruster" -> std_msgs/Float64MultiArray (thrusters). The value is
  *                         written at `output_index`; the array is zero-filled to
- *                         max(output_index)+1. Values ∈ [-1, 1].
- *     type = "position" → sensor_msgs/JointState (servos), `position[]` filled.
- *     type = "velocity" → sensor_msgs/JointState (servos), `velocity[]` filled.
+ *                         max(output_index)+1. Values in [-1, 1].
+ *     type = "position" -> sensor_msgs/JointState (servos), `position[]` filled.
+ *     type = "velocity" -> sensor_msgs/JointState (servos), `velocity[]` filled.
  *
  *   For JointState groups Stonefish matches servos BY JOINT NAME (`joint`), not by
  *   slot, and auto-detects position vs velocity mode from which vector is filled.
@@ -79,8 +113,22 @@ namespace stonefish_ros2
  *
  *   sitl_port          (int,    9002)
  *   sitl_host          (string, "")
- *   pwm_deadband       (int,    10)     µs deadband around center → 0.0
+ *   pwm_deadband       (int,    10)     us deadband around center -> 0.0
  *   velocity_deadband  (double, 0.05)   m/s deadband on NED velocities
+ *
+ *   loop_rate          (double, 400.0)  exchanges per simulated second; the
+ *                                       granted advance is 1/loop_rate and MUST
+ *                                       be an exact multiple of the Stonefish
+ *                                       physics step
+ *   sim_step_hz        (double, 0.0)    if > 0, validated against loop_rate
+ *   clock_topic        (string, "/clock")
+ *   clock_reliable     (bool,   true)   RELIABLE QoS on /clock; must match the
+ *                                       simulator's publisher or nothing binds
+ *   clock_depth        (int,    50)
+ *   clock_stall_ms     (int,    1000)   warn if no qualifying clock tick lands
+ *   recv_timeout_ms    (int,    20)     per-attempt wait for the PWM reply
+ *   recv_retries       (int,    3)      retransmits of the identical frame
+ *   stats_period_s     (double, 5.0)    0 disables the periodic health line
  *
  *   channels           (string[])       list of channel names; each name below
  *                                       has its own sub-parameters:
@@ -110,11 +158,6 @@ struct ChannelConfig {
 
 /**
  * @brief One published message: all channels sharing the same (topic, type).
- *
- * For type=="thruster": thr_pub holds a Float64MultiArray publisher and `width` is
- * the array length (max output_index + 1). For type=="position"/"velocity":
- * srv_pub holds a JointState publisher and channels are emitted compactly in
- * output_index order. `channel_idx` are indices into CubeHwSim::channels_.
  */
 struct OutputGroup {
   std::string      topic;
@@ -131,23 +174,16 @@ public:
   explicit CubeHwSim(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
   ~CubeHwSim() override;
 
-  double time_of_last_iteration_sim_time_ = 0.0;
-  std::chrono::steady_clock::time_point time_of_last_iteration_wall_time_;
-
 private:
   // ── SITL protocol constants ──────────────────────────────────────────── //
-  static constexpr uint16_t SITL_MAGIC     = 18458;
-  static constexpr size_t   PWM_CHANNELS   = 16;
-  double   LOOP_RATE_HZ   = 400.0;
-
-  std::string sim_namespace_;
-  bool lock_step_;
-  int64_t authority_id_ = -1;
-  std::atomic<bool> signed_in_{false};
-  bool was_holding_ = false;
+  static constexpr uint16_t SITL_MAGIC   = 18458;
+  static constexpr size_t   PWM_CHANNELS = 16;
 
   // Packed struct matching the ArduPilot SITL binary format (little-endian).
-  // Total: 2+2+4+16*2 = 40 bytes.
+  // Total: 2+2+4+16*2 = 40 bytes. ArduPilot switches to a 32-channel variant
+  // when any SERVOn_FUNCTION above 16 is assigned; the first 16 channels have
+  // identical layout, so a truncated read stays correct, but the size check
+  // below will reject it. Keep servo functions within 1..16.
 #pragma pack(push, 1)
   struct SitlPacket
   {
@@ -158,47 +194,76 @@ private:
   };
 #pragma pack(pop)
 
-  // ── Callbacks ────────────────────────────────────────────────────────── //
+  /** Consistent view of the vehicle state taken under sensor_mtx_. */
+  struct StateSnapshot
+  {
+    sensor_msgs::msg::Imu      imu;
+    nav_msgs::msg::Odometry    odom;
+    bool valid{false};
+  };
+
+  // ── Subscription callbacks (executor thread) ─────────────────────────── //
+  void cbClock(const rosgraph_msgs::msg::Clock::SharedPtr msg);
   void cbImu(sensor_msgs::msg::Imu::SharedPtr msg);
   void cbGps(sensor_msgs::msg::NavSatFix::SharedPtr msg);
   void cbOdom(nav_msgs::msg::Odometry::SharedPtr msg);
 
-  rclcpp::Client<stonefish_ros2::srv::AuthorityNodeSignIn>::SharedPtr  signin_client_;
-  rclcpp::Client<stonefish_ros2::srv::AuthorityNodeSignOut>::SharedPtr signout_client_;
- 
-  rclcpp::Publisher<stonefish_ros2::msg::AuthorityNodeVote>::SharedPtr vote_pub_;
-  rclcpp::Publisher<stonefish_ros2::msg::AuthorityNodeStep>::SharedPtr step_pub_;
+  // ── Exchange thread ──────────────────────────────────────────────────── //
 
-  rclcpp::TimerBase::SharedPtr signin_timer_;
-
-  // ── Main loop ────────────────────────────────────────────────────────── //
-  void loop();
-
-  // ── Helpers ──────────────────────────────────────────────────────────── //
+  /** Thread body: bootstrap, then one exchange per consumed grant, forever. */
+  void exchangeLoop();
 
   /**
-   * Read per-channel parameters, build channels_, group them by (topic, type)
-   * and create one publisher per group (Float64MultiArray for thruster groups,
-   * JointState for position/velocity groups). Assumes debug_ is already set.
+   * Block until the granted advance has been fully consumed by the simulator.
+   * @param[out] sim_at_send  simulation time that triggered this exchange (ns)
+   * @return false if the node is shutting down.
    */
+  bool waitForBudget(int64_t & sim_at_send);
+
+  /**
+   * One complete SITL exchange: snapshot -> JSON -> send -> blocking recv ->
+   * publishActuators. Does NOT grant.
+   * @return true if a valid PWM packet was received and applied.
+   */
+  bool doExchange(int64_t sim_at_send);
+
+  /**
+   * Advance grant_target_ns_ and publish the grant, in that order.
+   * Reversing the order loses trigger events.
+   */
+  void releaseBudget(int64_t sim_at_send);
+
+  /** Take a consistent copy of the latest IMU + odometry. */
+  StateSnapshot snapshotState() const;
+
+  /** Discard any datagrams queued before this exchange. Returns count. */
+  int drainSocket();
+
+  /** Wait up to timeout_ms for a valid SITL packet. Learns sitl_addr_. */
+  bool recvPacket(SitlPacket & pkt, int timeout_ms);
+
+  /** Verify ArduPilot's frame_count advanced by exactly one. */
+  void checkFrameContinuity(const SitlPacket & pkt);
+
+  /** Throttled health line: exchange count, retries, frame gaps, staleness. */
+  void reportStats(int64_t sim_at_send);
+
+  // ── Helpers (UNCHANGED from your original implementation) ────────────── //
   void configureChannels();
-
-  /**
-   * Fill and publish one message per output group from the raw SITL PWM packet.
-   * `pwm` points to the 16-element PWM array of the received packet.
-   */
   void publishActuators(const uint16_t * pwm);
-
-  /** Normalise a raw PWM value to [-1, 1] using per-channel min/center/max. */
   double normalisePwm(uint16_t raw, const ChannelConfig & cfg) const;
+  std::string makeServiceName(const std::string & name) const;
+  void signIn();
+  void signOutSync();
+  void allow_sim(bool permission_to_step);
+  void grant_sim(int64_t advance_ns);
 
-  /**
-   * Build the ArduPilot SITL JSON state string from current sensor data.
-   * Returns std::nullopt if required data is not yet available.
-   */
-  std::optional<std::string> buildSitlJson() const;
+  /** Build the SITL JSON from an explicit snapshot and an explicit sim time. */
+  std::optional<std::string> buildSitlJson(
+    const sensor_msgs::msg::Imu & imu,
+    const nav_msgs::msg::Odometry & odom,
+    int64_t sim_ns) const;
 
-  /** ZYX Euler angles from a unit quaternion (no external dependency). */
   static void eulerFromQuaternion(
     double qx, double qy, double qz, double qw,
     double & roll, double & pitch, double & yaw);
@@ -208,54 +273,87 @@ private:
     return (std::abs(x) < eps) ? 0.0 : x;
   }
 
-  // Helpers
-  std::string makeServiceName(const std::string & name) const;
-  void signIn();
-  void signOutSync();      // for shutdown
-  void allow_sim(bool permission_to_step);
-  void grant_sim(int64_t advance_ns);
+  // ── Lock-step gating state (guarded by gate_mtx_) ────────────────────── //
+  mutable std::mutex      gate_mtx_;
+  std::condition_variable gate_cv_;
+  int64_t latest_sim_ns_   {0};
+  int64_t grant_target_ns_ {INT64_MAX};   // INT64_MAX until bootstrap completes
+  uint64_t credit_runaways_{0};
+  bool    clock_seen_      {false};
 
-  
-  double  advance_seconds_ = 0.005;   // sim-time granted per exchange; MUST be a multiple of the sim step
-  int64_t advance_ns_      = 0;
+  int credit_windows_{3};        // grants kept outstanding; 1 == current behaviour
 
-  bool         grant_pending_ = false;
-  rclcpp::Time grant_target_{0, 0, RCL_ROS_TIME};
+  std::atomic<bool> stop_{false};
+  std::thread       exchange_thread_;
 
+  // ── Authority ────────────────────────────────────────────────────────── //
+  std::string sim_namespace_;
+  bool        lock_step_{true};
+  int64_t     authority_id_{-1};
+  std::atomic<bool> signed_in_{false};
+
+  rclcpp::Client<stonefish_ros2::srv::AuthorityNodeSignIn>::SharedPtr  signin_client_;
+  rclcpp::Client<stonefish_ros2::srv::AuthorityNodeSignOut>::SharedPtr signout_client_;
+  rclcpp::Publisher<stonefish_ros2::msg::AuthorityNodeVote>::SharedPtr vote_pub_;
+  rclcpp::Publisher<stonefish_ros2::msg::AuthorityNodeStep>::SharedPtr step_pub_;
+  rclcpp::TimerBase::SharedPtr signin_timer_;
+
+  // ── Timing configuration ─────────────────────────────────────────────── //
+  double  exchange_rate_hz_{400.0};
+  double  advance_seconds_ {0.0025};
+  int64_t advance_ns_      {0};
+  int     recv_timeout_ms_ {20};
+  int     recv_retries_    {3};
+  int     clock_stall_ms_  {1000};
+  double  stats_period_s_  {5.0};
+
+  // ── Diagnostics ──────────────────────────────────────────────────────── //
+  uint64_t exchanges_       {0};
+  uint64_t retransmits_     {0};
+  uint64_t timeouts_        {0};
+  uint64_t bad_packets_     {0};
+  uint64_t drained_packets_ {0};
+  uint64_t frame_gaps_      {0};
+  uint64_t skipped_no_state_{0};
+  uint32_t last_frame_count_{0};
+  bool     have_frame_count_{false};
+  uint16_t ap_frame_rate_hz_{0};
+  int64_t  worst_imu_lag_ns_{0};
+  int64_t  worst_rtt_ns_    {0};
+  std::chrono::steady_clock::time_point last_stats_;
 
   // ── Parameters ───────────────────────────────────────────────────────── //
-  int                  sitl_port_;
-  std::string          sitl_host_;
+  int                        sitl_port_{9002};
+  std::string                sitl_host_;
   std::vector<ChannelConfig> channels_;
-  int pwm_deadband_;
-  double velocity_deadband_;
-  std::string          imu_topic_;
-  std::string          gps_topic_;
-  std::string          odom_topic_;
-  std::string          imu_frame_;
-  std::string          odom_frame_;
-  std::string          world_frame_;
-  bool                 awaiting_response_;
-  bool                 debug_;
+  int                        pwm_deadband_{10};
+  double                     velocity_deadband_{0.05};
+  std::string                imu_topic_;
+  std::string                gps_topic_;
+  std::string                odom_topic_;
+  std::string                imu_frame_;
+  std::string                odom_frame_;
+  std::string                world_frame_;
+  bool                       debug_{false};
 
   // ── ROS 2 interfaces ─────────────────────────────────────────────────── //
-  std::vector<OutputGroup> groups_;   // one publisher per (topic, type)
+  std::vector<OutputGroup> groups_;
 
+  rclcpp::Subscription<rosgraph_msgs::msg::Clock>::SharedPtr    sub_clock_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr        sub_imu_;
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr  sub_gps_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr      sub_odom_;
 
-  rclcpp::TimerBase::SharedPtr timer_;
+  // ── Sensor state (guarded by sensor_mtx_) ────────────────────────────── //
+  mutable std::mutex                     sensor_mtx_;
+  sensor_msgs::msg::Imu::SharedPtr       imu_;
+  sensor_msgs::msg::NavSatFix::SharedPtr gps_;
+  nav_msgs::msg::Odometry::SharedPtr     odom_;
 
-  // ── Sensor state ─────────────────────────────────────────────────────── //
-  sensor_msgs::msg::Imu::SharedPtr        imu_;
-  sensor_msgs::msg::NavSatFix::SharedPtr  gps_;
-  nav_msgs::msg::Odometry::SharedPtr      odom_;
-
-  // ── UDP socket ───────────────────────────────────────────────────────── //
-  int                sock_fd_  {-1};
-  struct sockaddr_in sitl_addr_ {};
-  bool               sitl_addr_known_ {false};
+  // ── UDP socket (exchange thread only, after construction) ────────────── //
+  int                sock_fd_{-1};
+  struct sockaddr_in sitl_addr_{};
+  bool               sitl_addr_known_{false};
 };
 
 }  // namespace stonefish_ros2
