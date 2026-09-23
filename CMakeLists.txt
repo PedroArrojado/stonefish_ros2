@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(stonefish_ros2 VERSION 1.6.0)
+project(stonefish_ros2)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -21,7 +21,9 @@ find_package(pcl_conversions REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
-find_package(Stonefish REQUIRED 1.6.0)
+find_package(std_msgs REQUIRED)
+find_package(Stonefish REQUIRED 1.5.0)
+find_package(builtin_interfaces REQUIRED)
 
 # messages
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -35,9 +37,22 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/DebugPhysics.msg"
   "msg/Event.msg"
   "msg/EventArray.msg"
+  "msg/Uniform.msg"
+  "msg/Turbulence.msg"
+  "msg/Gust.msg"
+  "msg/AuthorityNodeVote.msg"
+  "msg/AuthorityNodeStep.msg"
   "srv/SonarSettings.srv"
   "srv/SonarSettings2.srv"
   "srv/Respawn.srv"
+  "srv/SetRTF.srv"
+  "srv/ChangeOcean.srv"
+  "srv/ChangeFog.srv"
+  "srv/DeleteObject.srv"
+  "srv/SpawnObject.srv"
+  "srv/AuthorityNodeSignIn.srv"
+  "srv/AuthorityNodeSignOut.srv"
+  "srv/ApplyWrench.srv"
   DEPENDENCIES std_msgs std_srvs geometry_msgs
 )
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} rosidl_typesupport_cpp)
@@ -83,6 +98,21 @@ add_executable(stonefish_simulator_nogpu src/stonefish_simulator_nogpu.cpp)
 target_link_libraries(stonefish_simulator_nogpu stonefish_ros2_interface)
 ament_target_dependencies(stonefish_simulator_nogpu rclcpp)
 
+add_executable(CUBEHardwareSim src/stonefish_ros2/CUBEHardwareSim.cpp)
+target_link_libraries(CUBEHardwareSim stonefish_ros2_interface)
+target_include_directories(CUBEHardwareSim PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(CUBEHardwareSim
+  rclcpp
+  std_msgs
+  sensor_msgs
+  nav_msgs
+)
+
+
+
 # installation
 install(
   TARGETS stonefish_ros2_interface
@@ -98,6 +128,15 @@ install(
   TARGETS stonefish_simulator stonefish_simulator_nogpu
   DESTINATION lib/${PROJECT_NAME}
 )
+
+install(TARGETS CUBEHardwareSim
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(FILES include/stonefish_ros2/CUBEHardwareSim.h
+  DESTINATION include/${PROJECT_NAME}
+)
+
 install(
   DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}

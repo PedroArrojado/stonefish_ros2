@@ -869,24 +869,29 @@ void ROS2SimulationManager::SimulationStepCompleted(Scalar timeStep)
         static_cast<uint64_t>(std::llround(static_cast<double>(timeStep) * 1e6)));
 
     //////////////////////////// Sample wave height at origin for monitoring spectral params ////////////////////////////
-    // if(waveHeights_pub_ && getOcean())
-    // {
-    //     // 4x4 grid, offsets chosen off any multiple of the 101 m / 893 m
-    //     // cascade periods so points don't alias onto the same repeating pattern.
-    //     static const std::array<double, 4> xs = {0.0, 137.0, 251.0, 389.0};
-    //     static const std::array<double, 4> ys = {0.0, 149.0, 277.0, 401.0};
+    if(waveHeights_pub_ && getOcean())
+    {
+        // 4x4 grid, offsets chosen off any multiple of the 101 m / 893 m
+        // cascade periods so points don't alias onto the same repeating pattern.
+        static const std::array<float, 4> xs = {0.0f, 137.0f, 251.0f, 389.0f};
+        static const std::array<float, 4> ys = {0.0f, 149.0f, 277.0f, 401.0f};
 
-    //     std_msgs::msg::Float64MultiArray waveHeightsMsg;
-    //     waveHeightsMsg.data.reserve(xs.size() * ys.size());
+        std::vector<glm::vec3> pts;
+        pts.reserve(xs.size() * ys.size());
 
-    //     auto* glOcean = getOcean()->getOpenGLOcean();
-    //     for (double x : xs)
-    //         for (double y : ys)
-    //             waveHeightsMsg.data.push_back(glOcean->ComputeWaveHeight(x, y));
+        for (float x : xs)
+            for (float y : ys)
+                pts.emplace_back(x, y, 0.0f);
 
-    //     waveHeights_pub_->publish(waveHeightsMsg);
-    // }
-    
+        auto* glOcean = getOcean()->getOpenGLOcean();
+        std::vector<float> heights = glOcean->ComputeWaveHeightMap(pts);
+
+        std_msgs::msg::Float64MultiArray waveHeightsMsg;
+        waveHeightsMsg.data.assign(heights.begin(), heights.end());
+
+        waveHeights_pub_->publish(waveHeightsMsg);
+    }
+        
     //////////////////////////// AUTHORITY MANAGEMENT ////////////////////////////
     {
     std::unique_lock<std::mutex> lk(authority_mutex);
